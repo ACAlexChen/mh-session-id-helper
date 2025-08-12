@@ -1,0 +1,18 @@
+{
+  "wsConfig": {
+    "ssl": false,
+    "host": "127.0.0.1",
+    "pingInterval": 5000,
+    "accessToken": null,
+    "port": 8081
+  },
+  "httpConfig": {
+    "ssl": false,
+    "host": "127.0.0.1",
+    "accessToken": null,
+    "port": 8083
+  },
+  "commandConfig": {
+    "a": ""
+  }
+}
