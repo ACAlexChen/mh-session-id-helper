@@ -8,6 +8,7 @@ import java.io.File
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import io.ktor.client.*
+import io.ktor.client.call.body
 import io.ktor.client.engine.cio.*
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.websocket.WebSockets
@@ -66,7 +67,7 @@ data class GroupData(
   var adminOnly: Boolean,
   var noticeEnabled: Boolean,
   val session: Session,
-  var noticeId: String? = null,
+  var noticeId: Int? = null,
   val groupId: Int
 )
 
@@ -102,9 +103,9 @@ class GroupManager(private val groupId: Int) {
   fun getNoticeEnabled() = data.noticeEnabled
   fun getWorldSessionList(): List<String> = data.session.world
   fun getWildsSessionList(): List<String> = data.session.wilds
-  fun getNoticeId(): String? = data.noticeId
+  fun getNoticeId(): Int? = data.noticeId
 
-  suspend fun setNoticeId(noticeId: String) {
+  suspend fun setNoticeId(noticeId: Int) {
     data.noticeId = noticeId
     save()
   }
@@ -116,7 +117,6 @@ class GroupManager(private val groupId: Int) {
       data.session.world.forEachIndexed { index, id -> strings.add("${index + 1}集：$id") }
     }
     if (!data.session.wilds.isEmpty()) {
-      if (!strings.isEmpty()) strings.add("\n")
       strings.add("荒野集会：")
       data.session.wilds.forEachIndexed { index, id -> strings.add("${index + 1}集：$id") }
     }
@@ -201,59 +201,20 @@ data class Event(
   @SerialName("group_id")
   val groupId: Int? = null,
   val sender: Sender? = null,
-  // val message: List<String>? = null,
+  // val message: List<Message>? = null,
   @SerialName("message_type")
   val messageType: MessageType? = null,
   @SerialName("raw_message")
   val rawMessage: String? = null
 )
 
+//data class Message()
+
 @Serializable
 data class Sender(
   @SerialName("user_id")
   val userId: Long,
   val role: Role? = null
-)
-
-@Serializable
-data class SendMsgArg(
-  @SerialName("message_type")
-  val messageType: String,
-  @SerialName("group_id")
-  val groupId: Int,
-  val message: SendMsgArgMessage
-)
-
-@Serializable
-data class SendMsgArgMessage(
-  val type: String,
-  val data: SendMsgArgMessageData
-)
-
-@Serializable
-data class SendMsgArgMessageData(
-  val text: String
-)
-
-@Serializable
-data class SendGroupNotice(
-  @SerialName("group_id")
-  val groupId: Int,
-  val content: String,
-  val image: String
-)
-
-@Serializable
-data class SendGroupNoticeResponse(
-  val data: String
-)
-
-@Serializable
-data class DelGroupNotice(
-  @SerialName("group_id")
-  val groupId: Int,
-  @SerialName("notice_id")
-  val noticeId:String
 )
 
 data class CommandMessage(val args: List<String>, val event: Event)
@@ -279,14 +240,73 @@ class CommandParser {
 
 }
 
-class LagrangeAPI(val httpConfig: HttpConfig) {
+@Serializable
+data class SendGroupMsgArg(
+  @SerialName("group_id")
+  val groupId: Int,
+  @SerialName("auto_escape")
+  val autoEscape: Boolean = false,
+  val message: List<SendGroupMsgMessageArg>
+)
+
+@Serializable
+data class SendGroupMsgMessageArg(
+  val type: String,
+  val data: SendGroupMsgMessageDataArg
+)
+
+@Serializable
+data class SendGroupMsgMessageDataArg(
+  val text: String
+)
+
+@Serializable
+data class SendGroupNoticeArg(
+  @SerialName("group_id")
+  val groupId: Int,
+  val content: String,
+  val image: String? = null
+)
+
+@Serializable
+data class DelGroupNoticeArg(
+  @SerialName("group_id")
+  val groupId: Int,
+  @SerialName("notice_id")
+  val noticeId: Int
+)
+
+@Serializable
+data class GetGroupNoticeArg(
+  @SerialName("group_id")
+  val groupId: Int
+)
+
+@Serializable
+data class GetGroupNoticeResponse(
+  val data: List<GetGroupNoticeDataResponse>
+)
+
+@Serializable
+data class GetGroupNoticeDataResponse(
+  @SerialName("notice_id")
+  val noticeId: String, // 为什么这里是String，左右脑互搏吗
+  val message: GetGroupNoticeDataMessageResponse
+)
+
+@Serializable
+data class GetGroupNoticeDataMessageResponse(
+  val text: String
+)
+
+class NapcatAPI(val httpConfig: HttpConfig) {
   private val client: HttpClient = HttpClient(CIO) {
     install(ContentNegotiation) {
       json()
     }
   }
 
-  suspend fun sendMsg(groupId: Int, msg: String) {
+  suspend fun sendGroupMsg(groupId: Int, msg: String) {
     client.post {
       url {
         protocol = if (httpConfig.ssl) {
@@ -299,17 +319,18 @@ class LagrangeAPI(val httpConfig: HttpConfig) {
         }
         host = httpConfig.host
         port = httpConfig.port
-        path("/send_msg")
+        path("/send_group_msg")
       }
       contentType(ContentType.Application.Json)
       setBody(
-        SendMsgArg(
-          messageType = "group",
+        SendGroupMsgArg(
           groupId = groupId,
-          message = SendMsgArgMessage(
-            type = "text",
-            data = SendMsgArgMessageData(
-              text = msg
+          message = listOf(
+            SendGroupMsgMessageArg(
+              type = "text",
+              data = SendGroupMsgMessageDataArg(
+                text = msg
+              )
             )
           )
         )
@@ -317,9 +338,9 @@ class LagrangeAPI(val httpConfig: HttpConfig) {
     }
   }
 
-  suspend fun sendGroupNotice(groupId: Int, content: String): String {
+  suspend fun sendGroupNotice(groupId: Int, content: String) {
     val image = "https://album.biliimg.com/bfs/new_dyn/0c2b1776814492e4270be1c9e96f99f259784373.jpg"
-    val response = client.post {
+    client.post {
       url {
         protocol = if (httpConfig.ssl) {
           URLProtocol.HTTPS
@@ -335,17 +356,41 @@ class LagrangeAPI(val httpConfig: HttpConfig) {
       }
       contentType(ContentType.Application.Json)
       setBody(
-        SendGroupNotice(
+        SendGroupNoticeArg(
           groupId = groupId,
-          content = content,
-          image = image
+          content = content
         )
       )
     }
-    return json.decodeFromString<SendGroupNoticeResponse>(response.bodyAsText()).data
+    // 太可恶了为什么不把noticeId发过来
   }
 
-  suspend fun delGroupNotice(groupId: Int, noticeId: String) {
+  suspend fun getGroupNotice(groupId: Int): GetGroupNoticeResponse {
+    val response = client.post {
+      url {
+        protocol = if (httpConfig.ssl) {
+          URLProtocol.HTTPS
+        } else {
+          URLProtocol.HTTP
+        }
+        httpConfig.accessToken?.let {
+          header("Authorization", "Bearer $it")
+        }
+        host = httpConfig.host
+        port = httpConfig.port
+        path("/_get_group_notice")
+      }
+      contentType(ContentType.Application.Json)
+      setBody(
+        GetGroupNoticeArg(
+          groupId = groupId
+        )
+      )
+    }
+    return json.decodeFromString(response.bodyAsText())
+  }
+
+  suspend fun delGroupNotice(groupId: Int, noticeId: Int) {
     client.post {
       url {
         protocol = if (httpConfig.ssl) {
@@ -362,7 +407,7 @@ class LagrangeAPI(val httpConfig: HttpConfig) {
       }
       contentType(ContentType.Application.Json)
       setBody(
-        DelGroupNotice(
+        DelGroupNoticeArg(
           groupId = groupId,
           noticeId = noticeId
         )
@@ -386,105 +431,110 @@ fun Event.getGroupManager(): GroupManager? {
   }
 }
 
-fun createCommand(commandConfig: CommandConfig, lagrangeAPI: LagrangeAPI): CommandParser {
+fun createCommand(commandConfig: CommandConfig, napcatAPI: NapcatAPI): CommandParser {
   return CommandParser().apply {
     register("查询") {
       val groupManager = event.getGroupManager() as GroupManager
-      lagrangeAPI.sendMsg(event.groupId!!, groupManager.getSessionString())
+      napcatAPI.sendGroupMsg(event.groupId!!, groupManager.getSessionString())
     }
 
     register("登记世界") {
       val groupManager = event.getGroupManager() as GroupManager
       if (groupManager.getAdminOnly() && (event.sender?.role !== Role.ADMIN && event.sender?.role !== Role.OWNER)) {
-        lagrangeAPI.sendMsg(event.groupId!!, "权限不足！")
+        napcatAPI.sendGroupMsg(event.groupId!!, "权限不足！")
         return@register
       }
       if (args.isEmpty()) {
-        lagrangeAPI.sendMsg(event.groupId!!, "未提供session id！")
+        napcatAPI.sendGroupMsg(event.groupId!!, "未提供session id！")
         return@register
       }
       val sessionId = args[0]
       groupManager.addWorldSession(sessionId)
-      lagrangeAPI.sendMsg(event.groupId!!, "登记成功！")
+      napcatAPI.sendGroupMsg(event.groupId!!, "登记成功！")
       if (groupManager.getNoticeEnabled()) {
         groupManager.getNoticeId()?.let {
-          lagrangeAPI.delGroupNotice(event.groupId, it)
+          napcatAPI.delGroupNotice(event.groupId, it)
         }
         val date = LocalDate.now()
-        lagrangeAPI.sendGroupNotice(event.groupId, "${date.month}月${date.dayOfMonth}日集会：\n${groupManager.getSessionString()}")
+        val content = "${date.month.value}月${date.dayOfMonth}日集会：\n${groupManager.getSessionString()}"
+        napcatAPI.sendGroupNotice(event.groupId, content)
+        val noticeData = napcatAPI.getGroupNotice(event.groupId)
+        noticeData.data.find { it.message.text == content }?.let {
+          groupManager.setNoticeId(it.noticeId.toInt())
+        }
       }
     }
 
     register("登记荒野") {
       val groupManager = event.getGroupManager() as GroupManager
       if (groupManager.getAdminOnly() && (event.sender?.role !== Role.ADMIN && event.sender?.role !== Role.OWNER)) {
-        lagrangeAPI.sendMsg(event.groupId!!, "权限不足！")
+        napcatAPI.sendGroupMsg(event.groupId!!, "权限不足！")
         return@register
       }
       if (args.isEmpty()) {
-        lagrangeAPI.sendMsg(event.groupId!!, "未提供session id！")
+        napcatAPI.sendGroupMsg(event.groupId!!, "未提供session id！")
         return@register
       }
       val sessionId = args[0]
       groupManager.addWildsSession(sessionId)
-      lagrangeAPI.sendMsg(event.groupId!!, "登记成功！")
+      napcatAPI.sendGroupMsg(event.groupId!!, "登记成功！")
       if (groupManager.getNoticeEnabled()) {
         groupManager.getNoticeId()?.let {
-          lagrangeAPI.delGroupNotice(event.groupId, it)
+          napcatAPI.delGroupNotice(event.groupId, it)
         }
         val date = LocalDate.now()
-        lagrangeAPI.sendGroupNotice(event.groupId, "${date.month}月${date.dayOfMonth}日集会：\n${groupManager.getSessionString()}")
+        napcatAPI.sendGroupNotice(event.groupId, "${date.month}月${date.dayOfMonth}日集会：\n${groupManager.getSessionString()}")
       }
     }
 
     register("删除世界") {
       val groupManager = event.getGroupManager() as GroupManager
       if (groupManager.getAdminOnly() && (event.sender?.role !== Role.ADMIN && event.sender?.role !== Role.OWNER)) {
-        lagrangeAPI.sendMsg(event.groupId!!, "权限不足！")
+        napcatAPI.sendGroupMsg(event.groupId!!, "权限不足！")
         return@register
       }
       if (args.isEmpty()) {
-        lagrangeAPI.sendMsg(event.groupId!!, "未提供session id！")
+        napcatAPI.sendGroupMsg(event.groupId!!, "未提供session id！")
         return@register
       }
       val sessionId = args[0]
       groupManager.removeWorldSessionById(sessionId)
-      lagrangeAPI.sendMsg(event.groupId!!, "删除成功！")
+      napcatAPI.sendGroupMsg(event.groupId!!, "删除成功！")
     }
 
     register("删除荒野") {
       val groupManager = event.getGroupManager() as GroupManager
       if (groupManager.getAdminOnly() && (event.sender?.role !== Role.ADMIN && event.sender?.role !== Role.OWNER)) {
-        lagrangeAPI.sendMsg(event.groupId!!, "权限不足！")
+        napcatAPI.sendGroupMsg(event.groupId!!, "权限不足！")
         return@register
       }
       if (args.isEmpty()) {
-        lagrangeAPI.sendMsg(event.groupId!!, "未提供session id！")
+        napcatAPI.sendGroupMsg(event.groupId!!, "未提供session id！")
         return@register
       }
       val sessionId = args[0]
       groupManager.removeWildsSessionById(sessionId)
-      lagrangeAPI.sendMsg(event.groupId!!, "删除成功！")
+      napcatAPI.sendGroupMsg(event.groupId!!, "删除成功！")
     }
 
     register("switchAdminOnly") {
       val groupManager = event.getGroupManager() as GroupManager
       if (event.sender?.role !== Role.ADMIN && event.sender?.role !== Role.OWNER) {
-        lagrangeAPI.sendMsg(event.groupId!!, "权限不足！")
+        napcatAPI.sendGroupMsg(event.groupId!!, "权限不足！")
         return@register
       }
       groupManager.switchAdminOnly()
-      lagrangeAPI.sendMsg(event.groupId!!, "切换成功，当前值：${groupManager.getAdminOnly()}")
+      napcatAPI.sendGroupMsg(event.groupId!!, "切换成功，当前值：${groupManager.getAdminOnly()}")
     }
 
     register("switchNoticeEnabled") {
       val groupManager = event.getGroupManager() as GroupManager
       if (event.sender?.role !== Role.ADMIN && event.sender?.role !== Role.OWNER) {
-        lagrangeAPI.sendMsg(event.groupId!!, "权限不足！")
+        napcatAPI.sendGroupMsg(event.groupId!!, "权限不足！")
         return@register
       }
       groupManager.switchNoticeEnabled()
-      lagrangeAPI.sendMsg(event.groupId!!, "切换成功，当前值：${groupManager.getNoticeEnabled()}")
+      napcatAPI.sendGroupMsg(event.groupId!!, "切换成功，当前值：${groupManager.getNoticeEnabled()}")
     }
   }
 }
@@ -504,8 +554,8 @@ fun main(): Unit = runBlocking {
   val httpConfig = config.httpConfig
   val commandConfig = config.commandConfig
   val channel = Channel<String>()
-  val lagrangeAPI = LagrangeAPI(httpConfig)
-  val parser = createCommand(commandConfig, lagrangeAPI)
+  val napcatAPI = NapcatAPI(httpConfig)
+  val parser = createCommand(commandConfig, napcatAPI)
 
   launch {
     println("Creating ws connection")
